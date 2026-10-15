@@ -1,13 +1,18 @@
 import argparse
 import asyncio
+import logging
 from pathlib import Path
 
 from app.ai.retrieval import OllamaEmbedder, PostgresRetriever
 from app.config import Settings
 from app.persistence.db import create_database
 
+# CLI tool: query the vector index directly to inspect retrieval quality.
+# Usage: python scripts/inspect_retrieval.py "query text" [--category category_name]
+
 
 async def main(query: str, category: str | None) -> None:
+    """Run a retrieval query and print top chunks with scores for debugging."""
     settings = Settings()
     engine, sessions = create_database(settings.database_url)
     try:

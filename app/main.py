@@ -31,9 +31,13 @@ DATABASE_HINT = (
     "Check that .env exists, DATABASE_URL is correct, and PostgreSQL is running and reachable."
 )
 
+# Composition root: wires settings, DB, LLM router, retriever, answer pipeline, dialogue service
+# Exposes POST /chat and GET /health; all business logic lives in injected callables
+
 
 def configured_providers(settings: Settings):
-    """Build only providers whose required credentials and model settings are present."""
+    """Build only providers whose required credentials and model settings are present.
+    Order follows LLM_PROVIDER_ORDER env var (e.g., gemini,openrouter,ollama)."""
     providers = []
     for name in settings.provider_order:
         if name == "gemini" and settings.gemini_api_key and settings.gemini_model:
@@ -60,6 +64,7 @@ def create_app(
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
+        """Application lifespan: configure logging, wire all dependencies, dispose on shutdown."""
         active_settings = settings or Settings()
         configure_logging(active_settings.log_level)
         application.state.settings = active_settings
@@ -124,19 +129,20 @@ def create_app(
         error_type: str,
         message: str | None = None,
     ) -> JSONResponse:
-        language = detect_language(message or getattr(request.state, "message", ""))
-        key = "api_unavailable" if status_code >= 500 else "api_request_failed"
-        if status_code == 413:
-            key = "message_too_long"
-        content = {"detail": localized_text(language, key)}
-        active_settings: Settings = request.app.state.settings
-        if active_settings.app_env == "development":
-            content["diagnostics"] = {
-                "stage": stage,
-                "error_type": error_type,
-                "request_id": getattr(request.state, "request_id", None),
-            }
-        return JSONResponse(status_code=status_code, content=content)
+            """Build localized error response; include diagnostics only in development."""
+            language = detect_language(message or getattr(request.state, "message", ""))
+            key = "api_unavailable" if status_code >= 500 else "api_request_failed"
+            if status_code == 413:
+                key = "message_too_long"
+            content = {"detail": localized_text(language, key)}
+            active_settings: Settings = request.app.state.settings
+            if active_settings.app_env == "development":
+                content["diagnostics"] = {
+                    "stage": stage,
+                    "error_type": error_type,
+                    "request_id": getattr(request.state, "request_id", None),
+                }
+            return JSONResponse(status_code=status_code, content=content)
 
     @application.exception_handler(StarletteHTTPException)
     async def http_error_handler(request: Request, exc: StarletteHTTPException):
@@ -177,37 +183,38 @@ def create_app(
 
     @application.middleware("http")
     async def request_logging(request: Request, call_next):
-        # Accept only UUID request IDs so arbitrary client text cannot enter server logs.
-        supplied_id = request.headers.get("X-Request-ID", "")
-        try:
-            request_id = str(UUID(supplied_id))
-        except (ValueError, TypeError, AttributeError):
-            request_id = str(uuid4())
-        request.state.request_id = request_id
-        started = perf_counter()
-        try:
-            response = await call_next(request)
-        except Exception as exc:
-            logger.error(
-                "http request_id=%s method=%s path=%s outcome=exception error=%s",
+            """Log requests with UUID request IDs; reject arbitrary client IDs to prevent log injection."""
+            # Accept only UUID request IDs so arbitrary client text cannot enter server logs.
+            supplied_id = request.headers.get("X-Request-ID", "")
+            try:
+                request_id = str(UUID(supplied_id))
+            except (ValueError, TypeError, AttributeError):
+                request_id = str(uuid4())
+            request.state.request_id = request_id
+            started = perf_counter()
+            try:
+                response = await call_next(request)
+            except Exception as exc:
+                logger.error(
+                    "http request_id=%s method=%s path=%s outcome=exception error=%s",
+                    request_id,
+                    request.method,
+                    request.url.path,
+                    type(exc).__name__,
+                )
+                raise
+            active_settings: Settings = request.app.state.settings
+            if active_settings.app_env == "development" or response.status_code < 400:
+                response.headers["X-Request-ID"] = request_id
+            logger.info(
+                "http request_id=%s method=%s path=%s status=%d duration_ms=%d",
                 request_id,
                 request.method,
                 request.url.path,
-                type(exc).__name__,
+                response.status_code,
+                int((perf_counter() - started) * 1000),
             )
-            raise
-        active_settings: Settings = request.app.state.settings
-        if active_settings.app_env == "development" or response.status_code < 400:
-            response.headers["X-Request-ID"] = request_id
-        logger.info(
-            "http request_id=%s method=%s path=%s status=%d duration_ms=%d",
-            request_id,
-            request.method,
-            request.url.path,
-            response.status_code,
-            int((perf_counter() - started) * 1000),
-        )
-        return response
+            return response
 
     @application.get("/")
     async def index():
@@ -215,39 +222,40 @@ def create_app(
 
     @application.get("/health")
     async def health(request: Request):
-        active_settings: Settings = request.app.state.settings
-        engine = request.app.state.engine
-        router = request.app.state.router
-        configured = [provider.name for provider in router.providers] if router else []
-        if engine is None:
-            if active_settings.app_env == "production":
-                return {"status": "ok"}
-            return {
-                "status": "ok",
-                "database": "not_checked",
-                "llm": {"configured_providers": configured, "last_provider": None},
-                "embedding_configured": False,
-            }
-        try:
-            async with engine.connect() as connection:
-                await connection.execute(text("SELECT 1"))
-                verified_chunks = await connection.scalar(
-                    text(
-                        """
-                        SELECT count(*)
-                        FROM chunks c JOIN sources s USING (source_id)
-                        WHERE s.status = 'verified'
-                        """
+            """Health check: verifies DB connectivity, counts verified chunks, reports LLM provider status."""
+            active_settings: Settings = request.app.state.settings
+            engine = request.app.state.engine
+            router = request.app.state.router
+            configured = [provider.name for provider in router.providers] if router else []
+            if engine is None:
+                if active_settings.app_env == "production":
+                    return {"status": "ok"}
+                return {
+                    "status": "ok",
+                    "database": "not_checked",
+                    "llm": {"configured_providers": configured, "last_provider": None},
+                    "embedding_configured": False,
+                }
+            try:
+                async with engine.connect() as connection:
+                    await connection.execute(text("SELECT 1"))
+                    verified_chunks = await connection.scalar(
+                        text(
+                            """
+                            SELECT count(*)
+                            FROM chunks c JOIN sources s USING (source_id)
+                            WHERE s.status = 'verified'
+                            """
+                        )
                     )
+            except (SQLAlchemyError, OSError, TimeoutError) as exc:
+                request_id = request.state.request_id
+                logger.warning(
+                    "health request_id=%s database=unavailable error=%s",
+                    request_id,
+                    type(exc).__name__,
                 )
-        except (SQLAlchemyError, OSError, TimeoutError) as exc:
-            request_id = request.state.request_id
-            logger.warning(
-                "health request_id=%s database=unavailable error=%s",
-                request_id,
-                type(exc).__name__,
-            )
-            return JSONResponse(
+                return JSONResponse(
                 status_code=503,
                 content={"status": "unavailable"}
                 if active_settings.app_env == "production"
@@ -287,39 +295,40 @@ def create_app(
 
     @application.post("/chat", response_model=ChatResponse)
     async def chat(payload: ChatRequest, request: Request):
-        request.state.message = payload.message
-        active_settings: Settings = request.app.state.settings
-        if len(payload.message) > active_settings.max_message_length:
-            request.state.error_stage = "input_validation"
-            request.state.error_type = "MessageTooLong"
-            raise HTTPException(status_code=413, detail="Message is too long")
-        try:
-            result = await request.app.state.dialogue_service.handle(
-                payload.session_id, payload.message, payload.action
+            """Main dialogue endpoint: delegates to DialogueService state machine."""
+            request.state.message = payload.message
+            active_settings: Settings = request.app.state.settings
+            if len(payload.message) > active_settings.max_message_length:
+                request.state.error_stage = "input_validation"
+                request.state.error_type = "MessageTooLong"
+                raise HTTPException(status_code=413, detail="Message is too long")
+            try:
+                result = await request.app.state.dialogue_service.handle(
+                    payload.session_id, payload.message, payload.action
+                )
+            except (SQLAlchemyError, OSError, TimeoutError) as exc:
+                request_id = request.state.request_id
+                request.state.error_stage = "persistence"
+                request.state.error_type = type(exc).__name__
+                logger.error(
+                    "chat request_id=%s stage=persistence outcome=unavailable error=%s",
+                    request_id,
+                    type(exc).__name__,
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="service_unavailable",
+                    headers={"X-Request-ID": request_id},
+                ) from exc
+            return ChatResponse(
+                status=result.status,
+                reply=result.reply,
+                language=result.language,
+                summary=result.summary,
+                category=result.category,
+                clarification_field=result.clarification_field,
+                citations=result.citations or [],
             )
-        except (SQLAlchemyError, OSError, TimeoutError) as exc:
-            request_id = request.state.request_id
-            request.state.error_stage = "persistence"
-            request.state.error_type = type(exc).__name__
-            logger.error(
-                "chat request_id=%s stage=persistence outcome=unavailable error=%s",
-                request_id,
-                type(exc).__name__,
-            )
-            raise HTTPException(
-                status_code=503,
-                detail="service_unavailable",
-                headers={"X-Request-ID": request_id},
-            ) from exc
-        return ChatResponse(
-            status=result.status,
-            reply=result.reply,
-            language=result.language,
-            summary=result.summary,
-            category=result.category,
-            clarification_field=result.clarification_field,
-            citations=result.citations or [],
-        )
 
     return application
 
