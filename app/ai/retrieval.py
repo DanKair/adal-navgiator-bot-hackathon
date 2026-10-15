@@ -68,7 +68,10 @@ class PostgresRetriever:
                     SELECT count(*)
                     FROM chunks c JOIN sources s USING (source_id)
                     WHERE s.status = 'verified'
-                      AND (:category IS NULL OR s.category IN (:category, 'general'))
+                      AND (
+                        CAST(:category AS text) IS NULL
+                        OR s.category IN (CAST(:category AS text), 'general')
+                      )
                     """
                 ),
                 {"category": category},
@@ -85,7 +88,10 @@ class PostgresRetriever:
                                1 - (c.embedding <=> CAST(:embedding AS vector)) AS score
                         FROM chunks c JOIN sources s USING (source_id)
                         WHERE s.status = 'verified'
-                          AND (:category IS NULL OR s.category IN (:category, 'general'))
+                          AND (
+                            CAST(:category AS text) IS NULL
+                            OR s.category IN (CAST(:category AS text), 'general')
+                          )
                         ORDER BY c.embedding <=> CAST(:embedding AS vector)
                         LIMIT :limit
                         """
