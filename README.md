@@ -96,29 +96,115 @@ Typical failure meanings:
 
 For local diagnosis, after copying `.env.example` and starting a local PostgreSQL server, use `APP_ENV=development LOG_LEVEL=DEBUG uv run uvicorn app.main:app --reload` and inspect the terminal running Uvicorn. In Compose, use the development override above and `docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f app`. The `.env.example` uses `DATABASE_URL` for a locally installed PostgreSQL; Compose overrides its host to `db`. Do not paste database URLs, API keys, or user messages into bug reports.
 
-## Add official source material
+## Add sources and populate the vector database
 
-The initial Adilet registry entry points to [the supplied document](https://old.adilet.zan.kz/rus/docs/K2000000350) and is deliberately `needs_verification`; its Markdown file contains no legal text and is not indexed.
+The assistant does not learn or fine-tune its chat model when you add documents. This project uses retrieval-augmented generation (RAG): it stores reviewed text chunks and their embedding vectors in PostgreSQL with pgvector, finds relevant chunks for a user's question, then asks the chat model to answer using that evidence. Only chunks from `verified` sources can be retrieved.
 
-To add content:
+The initial Adilet registry entry points to [the supplied document](https://old.adilet.zan.kz/rus/docs/K2000000350), but remains `needs_verification`; its Markdown file contains no legal text and is not indexed.
 
-1. Open the official source and select only the passage relevant to a supported user question. Check its current wording, effective date, and applicability; a URL or automated extraction is not verification.
-2. Have a human review the passage. Keep it short and self-contained in `data/sources/<source_id>.md`. Do not paraphrase the law as though the paraphrase were the source.
-3. Add or update the matching entry in `data/registry.yaml` with title, publisher, canonical URL, language, category, `checked_at`, and a precise list of claims the passage supports.
-4. Only after review set `status: verified`. Unverified and excluded items are not sent to retrieval.
-5. Configure the local Ollama embedding model and rebuild the index:
+### 1. Prepare a source file
 
-   ```sh
-   docker compose exec app uv run python scripts/build_knowledge_base.py
-   ```
+Use an official publisher and identify the exact page or document passage relevant to an in-scope question. Check the current wording, effective date, jurisdiction, and applicability. A URL, downloaded PDF, or automated text extraction is not by itself verification.
 
-6. Check relevant and irrelevant Russian and Kazakh queries before changing `RETRIEVAL_MIN_SCORE`:
+Add the reviewed passage as plain Markdown in `data/sources/<source_id>.md`. The filename must exactly match the registry entry's `source_id`. Keep each instruction, rule, or contact block self-contained; keep qualifications, contact details, and what a contact is for together. The ingestion script splits long text on paragraph and sentence boundaries into chunks of up to about 800 characters. Do not add secrets or personal data.
 
-   ```sh
-   docker compose exec app uv run python scripts/inspect_retrieval.py "не вывезли мусор" --category garbage
-   ```
+PDFs and web pages are not ingested automatically in this MVP. You may copy or extract the relevant text into the Markdown file, but a human must compare it with the official source before marking it verified. Do not paraphrase legal text as if it were a quotation or official wording.
 
-Markdown is the reviewed input format in this MVP. URL crawling, PDF parsing/OCR, and bulk indexing are intentionally not included. Extracted text from PDFs or websites should be manually reviewed before becoming verified source content.
+### 2. Add the source metadata
+
+Add a matching entry to `data/registry.yaml`. Use a unique, stable `source_id`; `category` must be one of the supported categories (`garbage`, `lighting`, `heating`, `water`, `roads`, `playground`, `snow`, `appeals`, `principles`, or `general`).
+
+```yaml
+- source_id: almaty-lighting-procedure
+  title: "Exact title from the official page"
+  publisher: "Official publisher"
+  url: "https://official.example.kz/page"
+  language: ru
+  category: lighting
+  checked_at: 2026-10-15
+  status: needs_verification
+  claims:
+    - "A short statement of what the passage confirms"
+```
+
+Replace the example title, publisher, URL, date, and claim with facts checked against the real source. `language` must be `ru` or `kk`. Keep `status: needs_verification` while the text is awaiting review. Once a human has verified the content and metadata, change it to `verified`. Sources with `needs_verification` or `excluded` status are not indexed; the `claims` list documents the scope of the source and does not replace the source text.
+
+### 3. Confirm PostgreSQL and the embedding model are ready
+
+Start the stack, if it is not already running:
+
+```sh
+docker compose up -d
+```
+
+Ollama must be running on the host and reachable from the app container at the URL configured by `OLLAMA_EMBEDDING_URL` (default in Compose: `http://host.docker.internal:11434/api/embed`). Check the installed models on the host:
+
+```sh
+curl http://localhost:11434/api/tags
+```
+
+The embedding model configured by `EMBEDDING_MODEL` must be installed in Ollama and return 1024-dimensional vectors, because `db/schema.sql` declares `embedding vector(1024)`. Use the same embedding model and settings for indexing and later retrieval; changing embedding models requires rebuilding the vectors for all sources.
+
+### 4. Build or refresh the index
+
+Run this after the source file and registry entry are ready:
+
+```sh
+docker compose exec app uv run python scripts/build_knowledge_base.py
+```
+
+The command reports how many verified chunks were indexed. It embeds `source title + chunk text` with Ollama and stores the chunk text, source metadata, and vector in PostgreSQL. Re-running it replaces the chunks for each verified source, so edits to source text are reflected in the index. It also removes chunks for sources no longer verified or removed from the registry; review registry changes carefully before running it.
+
+When developing with the reload override, use the same Compose files for commands:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec app \
+  uv run python scripts/build_knowledge_base.py
+```
+
+The production-style Compose service does not mount host source/data files into the app container. After changing source files or the registry, rebuild the app image before running ingestion there:
+
+```sh
+docker compose up -d --build app
+docker compose exec app uv run python scripts/build_knowledge_base.py
+```
+
+### 5. Verify stored text, vectors, and retrieval
+
+Check source and chunk counts, and confirm every stored vector has the required dimension:
+
+```sh
+docker compose exec -T db psql -U postgres -d adal -c \
+  "SELECT s.source_id, s.status, count(c.chunk_id) AS chunks
+   FROM sources s LEFT JOIN chunks c USING (source_id)
+   GROUP BY s.source_id, s.status ORDER BY s.source_id;"
+
+docker compose exec -T db psql -U postgres -d adal -c \
+  "SELECT count(*) AS chunks,
+          count(embedding) AS chunks_with_embeddings,
+          min(vector_dims(embedding)) AS min_dimensions,
+          max(vector_dims(embedding)) AS max_dimensions
+   FROM chunks;"
+```
+
+Inspect a few stored passages (do not print the full embedding vectors):
+
+```sh
+docker compose exec -T db psql -U postgres -d adal -c \
+  "SELECT c.chunk_id, s.status, s.category, s.title, c.content
+   FROM chunks c JOIN sources s USING (source_id) LIMIT 5;"
+```
+
+Finally, test retrieval with likely Russian and Kazakh phrasings and the matching category:
+
+```sh
+docker compose exec app uv run python scripts/inspect_retrieval.py \
+  "не работает уличное освещение" --category lighting
+docker compose exec app uv run python scripts/inspect_retrieval.py \
+  "көше жарығы жұмыс істемейді" --category lighting
+```
+
+The script prints matching chunks and scores after embedding the query with the configured Ollama model. No results can mean the source is not verified, no chunks were indexed, the query embedding failed, or the text is not sufficiently similar; check logs and the database counts before adjusting `RETRIEVAL_MIN_SCORE`. Also test unrelated queries to ensure they do not retrieve misleading passages. The app should fall back when verified evidence is absent or insufficient.
 
 ## API contract
 
