@@ -9,8 +9,12 @@ from app.persistence.db import create_database
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# CLI entry point: builds/rebuilds the knowledge base from verified sources.
+# Uses the same local embedding model as runtime retrieval (critical for vector compatibility).
+
 
 async def main() -> None:
+    """Ingest verified sources from data/registry.yaml into PostgreSQL/pgvector."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
     settings = Settings()
     engine, sessions = create_database(settings.database_url)

@@ -11,8 +11,13 @@ from app.knowledge.source_registry import SourceEntry, load_registry
 logger = logging.getLogger(__name__)
 MAX_CHUNK_CHARS = 800
 
+# Ingestion pipeline: reads verified sources from data/sources/, chunks them, embeds with local model,
+# upserts into PostgreSQL/pgvector. Only status=verified sources are indexed.
+
 
 def split_into_chunks(content: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
+    """Split markdown into ~800-char chunks on paragraph/sentence boundaries.
+    Keeps contacts with their context; no overlap between chunks."""
     paragraphs = [paragraph.strip() for paragraph in content.split("\n\n") if paragraph.strip()]
     chunks: list[str] = []
     current = ""
@@ -36,6 +41,7 @@ def split_into_chunks(content: str, max_chars: int = MAX_CHUNK_CHARS) -> list[st
 def verified_source_content(
     sources: list[SourceEntry], source_directory: Path
 ) -> list[tuple[SourceEntry, str]]:
+    """Load only verified sources; validate required fields and read .md files."""
     result = []
     for source in sources:
         if source.status != "verified":
