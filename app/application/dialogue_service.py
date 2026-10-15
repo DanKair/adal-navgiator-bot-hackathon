@@ -129,9 +129,19 @@ class DialogueService:
                 await self.repository.reset(chat_key)
                 return DialogueReply("fallback", text(language, "other_city"), language)
 
-            missing = list(dict.fromkeys(result.missing_fields))
-            if result.intent == "civic_issue" and not result.city and "city" not in missing:
-                missing.insert(0, "city")
+            missing = [
+                field
+                for field in dict.fromkeys(result.missing_fields)
+                if field != "city"
+            ]
+            if (
+                result.intent == "civic_issue"
+                and "issue_details" in missing
+                and result.category not in (None, "general")
+                and result.summary.strip()
+                and not self._is_ambiguous_issue(message)
+            ):
+                missing.remove("issue_details")
             location_type = (
                 self._normalize_location_type(result.location_type)
                 if result.location_type
@@ -146,7 +156,7 @@ class DialogueService:
                 "intent": result.intent,
                 "category": result.category or ("principles" if result.intent == "principles_question" else "general"),
                 "summary": self._redact_summary(summary),
-                "city": "Алматы" if is_almaty(result.city) else result.city,
+                "city": "Алматы" if result.intent == "civic_issue" else result.city,
                 "location_type": location_type,
                 "missing_fields": missing,
                 "language": language,
@@ -165,7 +175,7 @@ class DialogueService:
     async def _after_confirmation(
         self, chat_key: str, data: dict, language: str
     ) -> DialogueReply:
-            """Only transition from confirmation → clarification or retrieval."""
+        """Only transition from confirmation → clarification or retrieval."""
         missing = data.get("missing_fields", [])
         if missing:
             return await self._ask_clarification(chat_key, data, language)
@@ -220,7 +230,6 @@ class DialogueService:
                 except LLMUnavailableError:
                     return DialogueReply("error", text(language, "unavailable"), language)
                 data["summary"] = self._redact_summary(updated.summary or data.get("summary", ""))
-                data["category"] = updated.category or data.get("category", "general")
             data["missing_fields"] = missing
             if missing:
                 await self.repository.save(chat_key, DialogueState.AWAIT_CLARIFICATION.value, data)
@@ -276,32 +285,43 @@ class DialogueService:
 
     @staticmethod
     def _redact_summary(value: str) -> str:
-            """Redact PII (IIN, emails, phones) and truncate to 500 chars before any LLM call."""
-            value = re.sub(r"\b\d{12}\b", "[redacted]", value)
-            value = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[redacted]", value)
-            value = re.sub(r"(?<!\w)\+?\d[\d ()-]{7,}\d(?!\w)", "[redacted]", value)
-            return value[:500]
+        """Redact PII (IIN, emails, phones) and truncate to 500 chars before any LLM call."""
+        value = re.sub(r"\b\d{12}\b", "[redacted]", value)
+        value = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[redacted]", value)
+        value = re.sub(r"(?<!\w)\+?\d[\d ()-]{7,}\d(?!\w)", "[redacted]", value)
+        return value[:500]
 
-        @staticmethod
-        def _sanitize_model_input(value: str) -> str:
-            """Redact PII from user text before sending to LLM (no truncation)."""
-            value = re.sub(r"\b\d{12}\b", "[redacted]", value)
-            value = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[redacted]", value)
-            return re.sub(r"(?<!\w)\+?\d[\d ()-]{7,}\d(?!\w)", "[redacted]", value)
+    @staticmethod
+    def _is_ambiguous_issue(value: str) -> bool:
+        """Retain follow-up questions for vague descriptions where category alone is unsafe."""
+        return bool(
+            re.search(
+                r"\b(?:всё|все|повсюду|что-то|непонятно|какая-то|бәрі|бірдеңе)\b|"
+                r"затоп|потоп|су\s*(?:бас|тас)",
+                value.casefold(),
+            )
+        )
 
-        @staticmethod
-        def _normalize_location_type(value: str) -> str | None:
-            """Map free-text location to canonical category (двор, улица, подъезд, etc.) for RU/KK."""
-            normalized = value.casefold()
-            categories = (
-                ("двор", ("двор", "аула", "аулада")),
-                ("улица", ("улиц", "көше", "көшеде")),
-                ("подъезд", ("подъезд", "кіреберіс")),
-                ("дорога", ("дорог", "жол", "жолда")),
-                ("дом", ("дом", "үй", "үйде")),
-                ("площадка", ("площадк", "алаң")),
-            )
-            return next(
-                (label for label, terms in categories if any(term in normalized for term in terms)),
-                None,
-            )
+    @staticmethod
+    def _sanitize_model_input(value: str) -> str:
+        """Redact PII from user text before sending to LLM (no truncation)."""
+        value = re.sub(r"\b\d{12}\b", "[redacted]", value)
+        value = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[redacted]", value)
+        return re.sub(r"(?<!\w)\+?\d[\d ()-]{7,}\d(?!\w)", "[redacted]", value)
+
+    @staticmethod
+    def _normalize_location_type(value: str) -> str | None:
+        """Map free-text location to canonical category (двор, улица, подъезд, etc.) for RU/KK."""
+        normalized = value.casefold()
+        categories = (
+            ("двор", ("двор", "аула", "аулада")),
+            ("улица", ("улиц", "көше", "көшеде")),
+            ("подъезд", ("подъезд", "кіреберіс")),
+            ("дорога", ("дорог", "жол", "жолда")),
+            ("дом", ("дом", "үй", "үйде")),
+            ("площадка", ("площадк", "алаң")),
+        )
+        return next(
+            (label for label, terms in categories if any(term in normalized for term in terms)),
+            None,
+        )

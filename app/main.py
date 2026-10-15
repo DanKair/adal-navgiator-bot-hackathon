@@ -55,6 +55,28 @@ def configured_providers(settings: Settings):
             providers.append(
                 OllamaProvider(base_url=settings.ollama_base_url, model=settings.ollama_model)
             )
+        elif name == "gemini":
+            missing = []
+            if not settings.gemini_api_key:
+                missing.append("api_key")
+            if not settings.gemini_model:
+                missing.append("model")
+            logger.warning(
+                "llm provider=gemini outcome=disabled reason=missing_%s",
+                "_and_".join(missing),
+            )
+        elif name == "openrouter":
+            missing = []
+            if not settings.openrouter_api_key:
+                missing.append("api_key")
+            if not settings.openrouter_model_list:
+                missing.append("models")
+            logger.warning(
+                "llm provider=openrouter outcome=disabled reason=missing_%s",
+                "_and_".join(missing),
+            )
+        elif name == "ollama":
+            logger.warning("llm provider=ollama outcome=disabled reason=missing_model")
     return providers
 
 
@@ -222,40 +244,40 @@ def create_app(
 
     @application.get("/health")
     async def health(request: Request):
-            """Health check: verifies DB connectivity, counts verified chunks, reports LLM provider status."""
-            active_settings: Settings = request.app.state.settings
-            engine = request.app.state.engine
-            router = request.app.state.router
-            configured = [provider.name for provider in router.providers] if router else []
-            if engine is None:
-                if active_settings.app_env == "production":
-                    return {"status": "ok"}
-                return {
-                    "status": "ok",
-                    "database": "not_checked",
-                    "llm": {"configured_providers": configured, "last_provider": None},
-                    "embedding_configured": False,
-                }
-            try:
-                async with engine.connect() as connection:
-                    await connection.execute(text("SELECT 1"))
-                    verified_chunks = await connection.scalar(
-                        text(
-                            """
-                            SELECT count(*)
-                            FROM chunks c JOIN sources s USING (source_id)
-                            WHERE s.status = 'verified'
-                            """
-                        )
+        """Check DB connectivity and report safe diagnostics in development."""
+        active_settings: Settings = request.app.state.settings
+        engine = request.app.state.engine
+        router = request.app.state.router
+        configured = [provider.name for provider in router.providers] if router else []
+        if engine is None:
+            if active_settings.app_env == "production":
+                return {"status": "ok"}
+            return {
+                "status": "ok",
+                "database": "not_checked",
+                "llm": {"configured_providers": configured, "last_provider": None},
+                "embedding_configured": False,
+            }
+        try:
+            async with engine.connect() as connection:
+                await connection.execute(text("SELECT 1"))
+                verified_chunks = await connection.scalar(
+                    text(
+                        """
+                        SELECT count(*)
+                        FROM chunks c JOIN sources s USING (source_id)
+                        WHERE s.status = 'verified'
+                        """
                     )
-            except (SQLAlchemyError, OSError, TimeoutError) as exc:
-                request_id = request.state.request_id
-                logger.warning(
-                    "health request_id=%s database=unavailable error=%s",
-                    request_id,
-                    type(exc).__name__,
                 )
-                return JSONResponse(
+        except (SQLAlchemyError, OSError, TimeoutError) as exc:
+            request_id = request.state.request_id
+            logger.warning(
+                "health request_id=%s database=unavailable error=%s",
+                request_id,
+                type(exc).__name__,
+            )
+            return JSONResponse(
                 status_code=503,
                 content={"status": "unavailable"}
                 if active_settings.app_env == "production"
@@ -284,8 +306,8 @@ def create_app(
             },
             "knowledge_base": {"verified_chunks": int(verified_chunks or 0)},
             "embedding": {
-                "endpoint_configured": bool(request.app.state.settings.ollama_embedding_url),
-                "model_configured": bool(request.app.state.settings.embedding_model),
+                "endpoint_configured": bool(active_settings.ollama_embedding_url),
+                "model_configured": bool(active_settings.embedding_model),
                 "note": "Endpoint reachability is checked when a query needs embeddings.",
             },
             "diagnosis": None
@@ -295,40 +317,40 @@ def create_app(
 
     @application.post("/chat", response_model=ChatResponse)
     async def chat(payload: ChatRequest, request: Request):
-            """Main dialogue endpoint: delegates to DialogueService state machine."""
-            request.state.message = payload.message
-            active_settings: Settings = request.app.state.settings
-            if len(payload.message) > active_settings.max_message_length:
-                request.state.error_stage = "input_validation"
-                request.state.error_type = "MessageTooLong"
-                raise HTTPException(status_code=413, detail="Message is too long")
-            try:
-                result = await request.app.state.dialogue_service.handle(
-                    payload.session_id, payload.message, payload.action
-                )
-            except (SQLAlchemyError, OSError, TimeoutError) as exc:
-                request_id = request.state.request_id
-                request.state.error_stage = "persistence"
-                request.state.error_type = type(exc).__name__
-                logger.error(
-                    "chat request_id=%s stage=persistence outcome=unavailable error=%s",
-                    request_id,
-                    type(exc).__name__,
-                )
-                raise HTTPException(
-                    status_code=503,
-                    detail="service_unavailable",
-                    headers={"X-Request-ID": request_id},
-                ) from exc
-            return ChatResponse(
-                status=result.status,
-                reply=result.reply,
-                language=result.language,
-                summary=result.summary,
-                category=result.category,
-                clarification_field=result.clarification_field,
-                citations=result.citations or [],
+        """Delegate the chat request to the dialogue state machine."""
+        request.state.message = payload.message
+        active_settings: Settings = request.app.state.settings
+        if len(payload.message) > active_settings.max_message_length:
+            request.state.error_stage = "input_validation"
+            request.state.error_type = "MessageTooLong"
+            raise HTTPException(status_code=413, detail="Message is too long")
+        try:
+            result = await request.app.state.dialogue_service.handle(
+                payload.session_id, payload.message, payload.action
             )
+        except (SQLAlchemyError, OSError, TimeoutError) as exc:
+            request_id = request.state.request_id
+            request.state.error_stage = "persistence"
+            request.state.error_type = type(exc).__name__
+            logger.error(
+                "chat request_id=%s stage=persistence outcome=unavailable error=%s",
+                request_id,
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="service_unavailable",
+                headers={"X-Request-ID": request_id},
+            ) from exc
+        return ChatResponse(
+            status=result.status,
+            reply=result.reply,
+            language=result.language,
+            summary=result.summary,
+            category=result.category,
+            clarification_field=result.clarification_field,
+            citations=result.citations or [],
+        )
 
     return application
 

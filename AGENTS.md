@@ -259,9 +259,9 @@ START ──► AWAIT_DESCRIPTION ──► UNDERSTAND ──► CONFIRM ──�
                                                           └─(no)───► AWAIT_CORRECTION ──► UNDERSTAND
 ```
 
-- **UNDERSTAND** (LLM): classify intent: `civic_issue | principles_question | smalltalk | out_of_scope`; for `civic_issue` extract `{category, summary, city, location_type, missing_fields[]}`.
+- **UNDERSTAND** (LLM): classify intent: `civic_issue | principles_question | smalltalk | out_of_scope`; for `civic_issue` extract `{category, summary, city, location_type, missing_fields[]}`. Assume Almaty when the user does not name a city; only an explicitly named different city triggers the non-Almaty fallback.
 - **CONFIRM**: show a short recap with buttons *"Yes / No, let me correct"*. Retrieval is **forbidden** until the user confirms.
-- **CLARIFY**: ask **one** question at a time (city, place type, what exactly happened). Ambiguous inputs like *"everything got flooded"* must trigger a clarifying question (pipe burst / flooded entrance / sewage), not an immediate answer.
+- **CLARIFY**: ask **one** question at a time, and only when the missing detail materially changes routing. Never ask which city when none is named (default is Almaty), or repeat a problem category already understood. A place type may be requested when it changes the applicable instructions. Ambiguous inputs like *"everything got flooded"* must trigger a clarifying question (pipe burst / flooded entrance / sewage), not an immediate answer.
 - **RETRIEVE → ANSWER/FALLBACK**: see §9.
 - Must handle: `/start`, `/help`, `/cancel`, `/reset`, repeated messages, unexpected input in any state, empty text, stickers/voice/photos (reply politely: text only for now), very long messages (truncate safely), non-Almaty city (warn).
 - The user must not be able to reach ANSWER without passing CONFIRM.

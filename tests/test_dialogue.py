@@ -95,26 +95,52 @@ async def test_retrieval_is_blocked_until_confirmation():
 
 
 @pytest.mark.asyncio
-async def test_city_is_clarified_after_confirmation_before_retrieval():
+async def test_city_defaults_to_almaty_and_clear_lighting_issue_is_not_reasked():
     fakes = Fakes(
         [
             IntentResult(
                 intent="civic_issue",
                 category="lighting",
                 summary="Не работает уличное освещение",
+                missing_fields=["issue_details"],
             )
         ]
     )
     service = make_service(fakes)
-    await service.handle("session", "Не работает уличное освещение", "message")
-    question = await service.handle("session", "", "confirm")
-    assert question.status == "clarification"
-    assert question.clarification_field == "city"
+    first = await service.handle("session", "Не работает уличное освещение", "message")
+    assert first.status == "confirmation"
+    stored = next(iter(service.repository.rows.values()))[1]
+    assert stored["city"] == "Алматы"
+    assert stored["missing_fields"] == []
     assert fakes.retrieved == []
 
-    answer = await service.handle("session", "Алматы", "message")
+    answer = await service.handle("session", "", "confirm")
     assert answer.status == "answer"
     assert len(fakes.retrieved) == 1
+    assert len(fakes.classifications) == 1
+    assert next(iter(service.repository.rows.values()), None) is None
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_water_issue_can_still_ask_for_issue_details():
+    fakes = Fakes(
+        [
+            IntentResult(
+                intent="civic_issue",
+                category="water",
+                summary="Затопило всё",
+                missing_fields=["issue_details"],
+            )
+        ]
+    )
+    service = make_service(fakes)
+
+    await service.handle("session", "Затопило всё", "message")
+    question = await service.handle("session", "", "confirm")
+
+    assert question.status == "clarification"
+    assert question.clarification_field == "issue_details"
+    assert fakes.retrieved == []
 
 
 @pytest.mark.asyncio

@@ -59,6 +59,32 @@ docker exec -it <YOUR_APP_CONTAINER_NAME> curl http://host.docker.internal:11434
 
 The server logs a request ID with route, status, duration, and safe stage/error metadata; it deliberately omits chat text, session IDs, API keys, and database URLs. Development API errors may show an allowlisted stage, exception type, HTTP status, and request ID in the chat for debugging. Production chat errors show only a localized generic message; the request ID remains server-side. Stack traces, exception messages, database/provider details, and submitted request data are never included in API error responses. Production `/health` returns only readiness status; development `/health` includes subsystem diagnostics.
 
+To follow the app container logs directly, use the command you already use:
+
+```sh
+docker logs --follow hackathon_rag_bot-app-1
+```
+
+Or let Compose resolve the container name:
+
+```sh
+docker compose logs --follow app
+```
+
+Router failures now log a safe `error_category` and, when available, the public model ID and HTTP status. Common categories:
+
+- `rate_limited` — provider returned HTTP 429; check provider quotas and `Retry-After`.
+- `provider_overloaded_or_unavailable` — provider returned a 5xx response; retry/failover is attempted.
+- `authentication_failed` / `permission_denied` — check the API key, account access, and model permissions. Key values are never logged.
+- `model_or_endpoint_not_found` — check the configured model ID and provider endpoint.
+- `billing_or_credits` — provider returned HTTP 402; check account credits/billing.
+- `invalid_request_or_model_parameters` — the request or structured-output settings may not be supported by that model.
+- `provider_timeout` / `connection_error` — check connectivity, service availability, and timeout settings.
+- `invalid_structured_output` / `malformed_provider_response` — provider responded but did not return the expected JSON shape.
+- `missing_api_key`, `missing_model`, or `missing_models` — provider was disabled during startup because required configuration was absent.
+
+Logs contain provider/model identifiers, status, and error categories only—not prompt text, response bodies, API keys, or raw exception messages.
+
 In development, check `http://localhost:8000/health` for the database state, configured LLM provider names, last provider used, and indexed verified-chunk count. In production, health intentionally reports only `ok`, `degraded`, or `unavailable`. For deployment diagnosis, check that `.env` exists, `DATABASE_URL` points to the `db` Compose service, and the database container completed schema initialization. Configure at least one provider key and model in `.env`. `docker compose logs -f db` shows PostgreSQL startup and initialization errors.
 
 Typical failure meanings:
@@ -106,6 +132,8 @@ Markdown is the reviewed input format in this MVP. URL crawling, PDF parsing/OCR
   `action` may be `message`, `confirm`, `correct`, or `reset`. Responses have a status (`confirmation`, `clarification`, `answer`, `fallback`, `reset`, or `error`), localized reply, and optional citations.
 
 The browser stores only a random opaque session key; PostgreSQL stores an HMAC-SHA256 digest and compact dialogue fields, not raw message history. Avoid sending IIN, passwords, EDS keys, or unnecessary personal information.
+
+For civic issues, an unnamed city defaults to Almaty. The assistant does not ask for the city or repeat a recognized problem category; it asks a follow-up only when a missing place/detail could change the instructions. Explicitly naming a city outside Almaty still triggers the scope fallback.
 
 ## Architecture
 

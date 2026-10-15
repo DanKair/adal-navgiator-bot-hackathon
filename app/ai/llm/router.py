@@ -78,17 +78,44 @@ class LLMRouter:
                     errors.append(f"{provider.name}:invalid_output")
                     self._record_failure(provider.name, None)
                     logger.warning(
-                        "llm provider=%s outcome=failure error=InvalidStructuredOutputError",
+                        "llm provider=%s outcome=failure error_category=invalid_structured_output",
                         provider.name,
                     )
                 except (TimeoutError, asyncio.TimeoutError, ProviderRequestError) as exc:
-                    error_name = type(exc).__name__
-                    errors.append(f"{provider.name}:{error_name}")
-                    logger.warning("llm provider=%s outcome=failure error=%s", provider.name, error_name)
+                    category = (
+                        exc.category
+                        if isinstance(exc, ProviderRequestError)
+                        else "provider_timeout"
+                    )
+                    model = exc.model if isinstance(exc, ProviderRequestError) else None
+                    if model is None:
+                        model = getattr(provider, "model", None)
+                    if model is None:
+                        configured_models = getattr(provider, "models", None)
+                        if isinstance(configured_models, list):
+                            model = ",".join(configured_models)
+                    status_code = (
+                        exc.status_code if isinstance(exc, ProviderRequestError) else None
+                    )
+                    retry_after_s = (
+                        exc.retry_after_s if isinstance(exc, ProviderRequestError) else None
+                    )
+                    errors.append(f"{provider.name}:{category}")
+                    logger.warning(
+                        "llm provider=%s model=%s outcome=failure error_category=%s "
+                        "status_code=%s retry_after_s=%s",
+                        provider.name,
+                        model or "unspecified",
+                        category,
+                        status_code or "none",
+                        retry_after_s if retry_after_s is not None else "none",
+                    )
                     self._record_failure(provider.name, getattr(exc, "retry_after_s", None))
                 break
         if not self.providers:
             logger.error("llm outcome=unavailable reason=no_configured_providers")
+        else:
+            logger.error("llm outcome=unavailable provider_failures=%s", ",".join(errors))
         raise LLMUnavailableError("All configured LLM providers failed: " + ", ".join(errors))
 
     def _record_failure(self, provider_name: str, retry_after_s: float | None) -> None:
