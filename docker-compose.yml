@@ -19,7 +19,7 @@ services:
   app:
     build: .
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:${DOCKER_HOST_GATEWAY}" # Maps the host gateway cleanly inside Linux containers
     environment:
       APP_ENV: production
       DATABASE_URL: postgresql+asyncpg://adal_app:${APP_DB_PASSWORD}@db:5432/adal
@@ -31,7 +31,7 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_MODELS: ${OPENROUTER_MODELS:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5:4b}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
       OLLAMA_EMBEDDING_URL: ${OLLAMA_EMBEDDING_URL:-http://host.docker.internal:11434/api/embed}
       LLM_TIMEOUT_CLOUD_S: ${LLM_TIMEOUT_CLOUD_S:-15}

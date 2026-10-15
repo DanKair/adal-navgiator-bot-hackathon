@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     app_env: Literal["development", "production"] = "production"
 
-    database_url: str = "postgresql+asyncpg://adal_app:change-me@localhost:5432/adal"
+    database_url: str = "postgresql+asyncpg://adal_app:change-me@db:5432/adal"
     chat_id_hmac_secret: str = ""
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     llm_provider_order: str = "gemini,openrouter,ollama"

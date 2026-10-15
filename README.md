@@ -51,6 +51,12 @@ Logging stays enabled in both environments. Set `LOG_LEVEL=DEBUG` in `.env` for 
 docker compose logs -f app
 ```
 
+Also try:
+```
+docker exec -it <YOUR_APP_CONTAINER_NAME> curl http://host.docker.internal:11434
+```
+- This makes sures that app container could see and talk with running local Ollama server
+
 The server logs a request ID with route, status, duration, and safe stage/error metadata; it deliberately omits chat text, session IDs, API keys, and database URLs. Development API errors may show an allowlisted stage, exception type, HTTP status, and request ID in the chat for debugging. Production chat errors show only a localized generic message; the request ID remains server-side. Stack traces, exception messages, database/provider details, and submitted request data are never included in API error responses. Production `/health` returns only readiness status; development `/health` includes subsystem diagnostics.
 
 In development, check `http://localhost:8000/health` for the database state, configured LLM provider names, last provider used, and indexed verified-chunk count. In production, health intentionally reports only `ok`, `degraded`, or `unavailable`. For deployment diagnosis, check that `.env` exists, `DATABASE_URL` points to the `db` Compose service, and the database container completed schema initialization. Configure at least one provider key and model in `.env`. `docker compose logs -f db` shows PostgreSQL startup and initialization errors.
