@@ -37,6 +37,90 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 The database uses the prebuilt `pgvector/pgvector:pg16` image; Compose pulls it from its registry when it is not already local. No project-specific database image or registry upload is needed. The SQL and role setup scripts are mounted read-only into PostgreSQL's initialization directory. PostgreSQL runs those scripts only when creating a new, empty `postgres_data` volume; edits to them do not reinitialize an existing database. Use a real migration for an existing database, or reset only the development database volume if you intentionally want a fresh database.
 
+## Development workflow and applying changes
+
+### Start the development stack
+
+From the repository root, make sure `.env` is configured, then start the development Compose configuration:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+Compose merges the two files, with `docker-compose.dev.yml` overriding or extending the base configuration. The development override mounts the local `app/` and read-only `data/` directories into the app container and enables Uvicorn reload. Keep this terminal open to see startup output and stop the stack with `Ctrl+C`.
+
+To run it in the background instead:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml ps
+```
+
+Open `http://localhost:8000` for the chat and `http://localhost:8000/health` for development diagnostics. Run tests on the host (not inside the app container, whose production image does not include the test suite or development dependencies):
+
+```sh
+uv sync --all-groups
+uv run pytest
+```
+
+For a focused test, pass its path, for example `uv run pytest tests/test_dialogue.py`. Most unit/API tests use fakes; database-backed retrieval or ingestion also needs the Compose database and a reachable Ollama embedding model.
+
+### What the log command means
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f app
+```
+
+- The first `-f docker-compose.yml` selects the base Compose file.
+- The second `-f docker-compose.dev.yml` adds the development overrides.
+- `logs` reads output from containers in the selected Compose project.
+- The `-f` after `logs` means **follow**: keep printing new log lines as they appear. Press `Ctrl+C` to stop following; this does not stop the containers.
+- `app` selects only the app service. Use `db` to view PostgreSQL logs, or omit the service name to follow all services.
+
+For example:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f db
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f
+```
+
+### Which changes need a restart or rebuild?
+
+| Change | Development stack | Production-style stack |
+|---|---|---|
+| Python files under `app/` | The bind mount and Uvicorn reload apply changes automatically. | Rebuild/recreate the app: `docker compose up -d --build app`. |
+| Browser files under `app/web/` | The bind mount exposes changes; refresh the browser (hard-refresh if cached). | Rebuild/recreate the app, then refresh: `docker compose up -d --build app`. |
+| `.env` values used by Compose or the app | Recreate the affected service so it receives the new environment. For app settings: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --force-recreate app`. | For app settings: `docker compose up -d --force-recreate app`. A rebuild is not normally needed unless the image/build inputs changed. |
+| `pyproject.toml`, `uv.lock`, or app `Dockerfile` | Rebuild/recreate the app: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build app`. | Rebuild/recreate the app: `docker compose up -d --build app`. |
+| Compose YAML | Re-run `up` with the same file list; use `--force-recreate` if you need to ensure the changed service configuration is applied. | Re-run `docker compose up -d`; use `--force-recreate` if needed. |
+| `data/registry.yaml` or source Markdown | The data bind mount makes the files visible, but rebuild the knowledge index with the command below. | Data is copied into the image, so rebuild/recreate the app first, then run the index build. |
+| `db/schema.sql` or the role-init script | These are first-initialization scripts, not migrations. Apply a deliberate SQL migration to an existing database. | Same behavior: container recreation does not rerun initialization scripts on an existing database volume. |
+
+For the full source-index command while using development Compose:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec app \
+  uv run python scripts/build_knowledge_base.py
+```
+
+For production-style Compose, the equivalent command is:
+
+```sh
+docker compose exec app uv run python scripts/build_knowledge_base.py
+```
+
+An app restart is not the same as an image rebuild: use `--force-recreate` to apply changed environment values, and `--build` when dependencies, the Dockerfile, or files copied into the image have changed. Running `up` with the same Compose file list is important so the correct configuration is used.
+
+Changing `APP_DB_PASSWORD` in `.env` alone does not rotate the password of the already-created PostgreSQL role. The database role must be updated too, and then the app container recreated with the new URL/password. Likewise, `POSTGRES_PASSWORD` initializes PostgreSQL's administrator password only when its data volume is first created. Do not publish or paste `.env` values into logs or support messages.
+
+To stop containers without deleting database data:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml down
+```
+
+Do not add `-v` unless you intentionally want to delete the database volume and all its stored data.
+
 ## Configure the model providers
 
 Set `LLM_PROVIDER_ORDER` to an ordered comma-separated list of `gemini`, `openrouter`, and `ollama`. Providers without required credentials/model configuration are omitted. Configure model IDs and API keys only through `.env`; do not put them in source files. For Ollama, configure `OLLAMA_MODEL`, run Ollama on the host, and pull the selected chat and embedding models there.
@@ -45,31 +129,15 @@ Provider inputs and outputs are never logged. The router makes one structured-ou
 
 ## Debugging and logs
 
-Logging stays enabled in both environments. Set `LOG_LEVEL=DEBUG` in `.env` for more server-side diagnostics, or leave it at `INFO` for routine use. The development Compose override sets `DEBUG`; production defaults to `INFO`. The API writes timestamped logs to standard output; view them with:
+Logging stays enabled in both environments. Set `LOG_LEVEL=DEBUG` in `.env` for more server-side diagnostics, or leave it at `INFO` for routine use. The development Compose override sets `DEBUG`; production defaults to `INFO`. The API writes timestamped logs to standard output. While running the development stack, follow app logs with:
 
 ```sh
-docker compose logs -f app
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f app
 ```
 
-Also try:
-```
-docker exec -it <YOUR_APP_CONTAINER_NAME> curl http://host.docker.internal:11434
-```
-- This makes sures that app container could see and talk with running local Ollama server
+For the production-style stack, use `docker compose logs -f app`. In both commands, `logs -f` follows new output; `Ctrl+C` stops following logs, not the containers.
 
 The server logs a request ID with route, status, duration, and safe stage/error metadata; it deliberately omits chat text, session IDs, API keys, and database URLs. Development API errors may show an allowlisted stage, exception type, HTTP status, and request ID in the chat for debugging. Production chat errors show only a localized generic message; the request ID remains server-side. Stack traces, exception messages, database/provider details, and submitted request data are never included in API error responses. Production `/health` returns only readiness status; development `/health` includes subsystem diagnostics.
-
-To follow the app container logs directly, use the command you already use:
-
-```sh
-docker logs --follow hackathon_rag_bot-app-1
-```
-
-Or let Compose resolve the container name:
-
-```sh
-docker compose logs --follow app
-```
 
 Router failures now log a safe `error_category` and, when available, the public model ID and HTTP status. Common categories:
 
