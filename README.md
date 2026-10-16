@@ -100,13 +100,13 @@ For the full source-index command while using development Compose:
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.dev.yml exec app \
-  uv run python scripts/build_knowledge_base.py
+  uv run --no-sync python -m scripts.build_knowledge_base
 ```
 
 For production-style Compose, the equivalent command is:
 
 ```sh
-docker compose exec app uv run python scripts/build_knowledge_base.py
+docker compose exec app uv run --no-sync python -m scripts.build_knowledge_base
 ```
 
 An app restart is not the same as an image rebuild: use `--force-recreate` to apply changed environment values, and `--build` when dependencies, the Dockerfile, or files copied into the image have changed. Running `up` with the same Compose file list is important so the correct configuration is used.
@@ -218,7 +218,7 @@ The embedding model configured by `EMBEDDING_MODEL` must be installed in Ollama 
 Run this after the source file and registry entry are ready:
 
 ```sh
-docker compose exec app uv run python scripts/build_knowledge_base.py
+docker compose exec app uv run --no-sync python -m scripts.build_knowledge_base
 ```
 
 The command reports how many verified chunks were indexed. It embeds `source title + chunk text` with Ollama and stores the chunk text, source metadata, and vector in PostgreSQL. Re-running it replaces the chunks for each verified source, so edits to source text are reflected in the index. It also removes chunks for sources no longer verified or removed from the registry; review registry changes carefully before running it.
@@ -227,14 +227,14 @@ When developing with the reload override, use the same Compose files for command
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.dev.yml exec app \
-  uv run python scripts/build_knowledge_base.py
+  uv run --no-sync python -m scripts.build_knowledge_base
 ```
 
 The production-style Compose service does not mount host source/data files into the app container. After changing source files or the registry, rebuild the app image before running ingestion there:
 
 ```sh
 docker compose up -d --build app
-docker compose exec app uv run python scripts/build_knowledge_base.py
+docker compose exec app uv run --no-sync python -m scripts.build_knowledge_base
 ```
 
 ### 5. Verify stored text, vectors, and retrieval
@@ -266,9 +266,9 @@ docker compose exec -T db psql -U postgres -d adal -c \
 Finally, test retrieval with likely Russian and Kazakh phrasings and the matching category:
 
 ```sh
-docker compose exec app uv run python scripts/inspect_retrieval.py \
+docker compose exec app uv run --no-sync python -m scripts.inspect_retrieval \
   "не работает уличное освещение" --category lighting
-docker compose exec app uv run python scripts/inspect_retrieval.py \
+docker compose exec app uv run --no-sync python -m scripts.inspect_retrieval \
   "көше жарығы жұмыс істемейді" --category lighting
 ```
 
