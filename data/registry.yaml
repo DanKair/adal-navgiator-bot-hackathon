@@ -4,6 +4,21 @@
   url: "https://old.adilet.zan.kz/rus/docs/K2000000350"
   language: ru
   category: appeals
-  checked_at:
-  status: needs_verification
-  claims: []
+  checked_at: "2026-10-14"
+  status: verified
+  claims:
+    - "Статья 91. Порядок обжалования"
+    - "Статья 93. Форма и содержание жалобы"
+
+- source_id: housing-relations
+  title: "О жилищных отношениях"
+  publisher: "ИПС «Әділет»"
+  url: "https://old.adilet.zan.kz/rus/docs/Z970000094_"
+  language: ru
+  category: general
+  checked_at: "2026-10-15"
+  status: verified
+  claims:
+    - "Управление многоквартирным жилым домом"
+    - "Содержание общего имущества многоквартирного жилого дома"
+    - "Обязанности органов управления и собственников квартир"

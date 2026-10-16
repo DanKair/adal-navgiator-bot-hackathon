@@ -69,9 +69,9 @@ class PostgresRetriever:
                     FROM chunks c JOIN sources s USING (source_id)
                     WHERE s.status = 'verified'
                       AND (
-                        CAST(:category AS text) IS NULL
-                        OR s.category IN (CAST(:category AS text), 'general')
-                      )
+                            CAST(:category AS TEXT) IS NULL
+                            OR s.category IN (CAST(:category AS TEXT), 'general')
+                        )
                     """
                 ),
                 {"category": category},
@@ -89,9 +89,9 @@ class PostgresRetriever:
                         FROM chunks c JOIN sources s USING (source_id)
                         WHERE s.status = 'verified'
                           AND (
-                            CAST(:category AS text) IS NULL
-                            OR s.category IN (CAST(:category AS text), 'general')
-                          )
+                                CAST(:category AS TEXT) IS NULL
+                                OR s.category IN (CAST(:category AS TEXT), 'general')
+                            )
                         ORDER BY c.embedding <=> CAST(:embedding AS vector)
                         LIMIT :limit
                         """

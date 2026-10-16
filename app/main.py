@@ -31,13 +31,9 @@ DATABASE_HINT = (
     "Check that .env exists, DATABASE_URL is correct, and PostgreSQL is running and reachable."
 )
 
-# Composition root: wires settings, DB, LLM router, retriever, answer pipeline, dialogue service
-# Exposes POST /chat and GET /health; all business logic lives in injected callables
-
 
 def configured_providers(settings: Settings):
-    """Build only providers whose required credentials and model settings are present.
-    Order follows LLM_PROVIDER_ORDER env var (e.g., gemini,openrouter,ollama)."""
+    """Build only providers whose required credentials and model settings are present."""
     providers = []
     for name in settings.provider_order:
         if name == "gemini" and settings.gemini_api_key and settings.gemini_model:
@@ -55,28 +51,6 @@ def configured_providers(settings: Settings):
             providers.append(
                 OllamaProvider(base_url=settings.ollama_base_url, model=settings.ollama_model)
             )
-        elif name == "gemini":
-            missing = []
-            if not settings.gemini_api_key:
-                missing.append("api_key")
-            if not settings.gemini_model:
-                missing.append("model")
-            logger.warning(
-                "llm provider=gemini outcome=disabled reason=missing_%s",
-                "_and_".join(missing),
-            )
-        elif name == "openrouter":
-            missing = []
-            if not settings.openrouter_api_key:
-                missing.append("api_key")
-            if not settings.openrouter_model_list:
-                missing.append("models")
-            logger.warning(
-                "llm provider=openrouter outcome=disabled reason=missing_%s",
-                "_and_".join(missing),
-            )
-        elif name == "ollama":
-            logger.warning("llm provider=ollama outcome=disabled reason=missing_model")
     return providers
 
 
@@ -86,7 +60,6 @@ def create_app(
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
-        """Application lifespan: configure logging, wire all dependencies, dispose on shutdown."""
         active_settings = settings or Settings()
         configure_logging(active_settings.log_level)
         application.state.settings = active_settings
@@ -151,20 +124,19 @@ def create_app(
         error_type: str,
         message: str | None = None,
     ) -> JSONResponse:
-            """Build localized error response; include diagnostics only in development."""
-            language = detect_language(message or getattr(request.state, "message", ""))
-            key = "api_unavailable" if status_code >= 500 else "api_request_failed"
-            if status_code == 413:
-                key = "message_too_long"
-            content = {"detail": localized_text(language, key)}
-            active_settings: Settings = request.app.state.settings
-            if active_settings.app_env == "development":
-                content["diagnostics"] = {
-                    "stage": stage,
-                    "error_type": error_type,
-                    "request_id": getattr(request.state, "request_id", None),
-                }
-            return JSONResponse(status_code=status_code, content=content)
+        language = detect_language(message or getattr(request.state, "message", ""))
+        key = "api_unavailable" if status_code >= 500 else "api_request_failed"
+        if status_code == 413:
+            key = "message_too_long"
+        content = {"detail": localized_text(language, key)}
+        active_settings: Settings = request.app.state.settings
+        if active_settings.app_env == "development":
+            content["diagnostics"] = {
+                "stage": stage,
+                "error_type": error_type,
+                "request_id": getattr(request.state, "request_id", None),
+            }
+        return JSONResponse(status_code=status_code, content=content)
 
     @application.exception_handler(StarletteHTTPException)
     async def http_error_handler(request: Request, exc: StarletteHTTPException):
@@ -205,38 +177,37 @@ def create_app(
 
     @application.middleware("http")
     async def request_logging(request: Request, call_next):
-            """Log requests with UUID request IDs; reject arbitrary client IDs to prevent log injection."""
-            # Accept only UUID request IDs so arbitrary client text cannot enter server logs.
-            supplied_id = request.headers.get("X-Request-ID", "")
-            try:
-                request_id = str(UUID(supplied_id))
-            except (ValueError, TypeError, AttributeError):
-                request_id = str(uuid4())
-            request.state.request_id = request_id
-            started = perf_counter()
-            try:
-                response = await call_next(request)
-            except Exception as exc:
-                logger.error(
-                    "http request_id=%s method=%s path=%s outcome=exception error=%s",
-                    request_id,
-                    request.method,
-                    request.url.path,
-                    type(exc).__name__,
-                )
-                raise
-            active_settings: Settings = request.app.state.settings
-            if active_settings.app_env == "development" or response.status_code < 400:
-                response.headers["X-Request-ID"] = request_id
-            logger.info(
-                "http request_id=%s method=%s path=%s status=%d duration_ms=%d",
+        # Accept only UUID request IDs so arbitrary client text cannot enter server logs.
+        supplied_id = request.headers.get("X-Request-ID", "")
+        try:
+            request_id = str(UUID(supplied_id))
+        except (ValueError, TypeError, AttributeError):
+            request_id = str(uuid4())
+        request.state.request_id = request_id
+        started = perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            logger.error(
+                "http request_id=%s method=%s path=%s outcome=exception error=%s",
                 request_id,
                 request.method,
                 request.url.path,
-                response.status_code,
-                int((perf_counter() - started) * 1000),
+                type(exc).__name__,
             )
-            return response
+            raise
+        active_settings: Settings = request.app.state.settings
+        if active_settings.app_env == "development" or response.status_code < 400:
+            response.headers["X-Request-ID"] = request_id
+        logger.info(
+            "http request_id=%s method=%s path=%s status=%d duration_ms=%d",
+            request_id,
+            request.method,
+            request.url.path,
+            response.status_code,
+            int((perf_counter() - started) * 1000),
+        )
+        return response
 
     @application.get("/")
     async def index():
@@ -244,7 +215,6 @@ def create_app(
 
     @application.get("/health")
     async def health(request: Request):
-        """Check DB connectivity and report safe diagnostics in development."""
         active_settings: Settings = request.app.state.settings
         engine = request.app.state.engine
         router = request.app.state.router
@@ -306,8 +276,8 @@ def create_app(
             },
             "knowledge_base": {"verified_chunks": int(verified_chunks or 0)},
             "embedding": {
-                "endpoint_configured": bool(active_settings.ollama_embedding_url),
-                "model_configured": bool(active_settings.embedding_model),
+                "endpoint_configured": bool(request.app.state.settings.ollama_embedding_url),
+                "model_configured": bool(request.app.state.settings.embedding_model),
                 "note": "Endpoint reachability is checked when a query needs embeddings.",
             },
             "diagnosis": None
@@ -317,7 +287,6 @@ def create_app(
 
     @application.post("/chat", response_model=ChatResponse)
     async def chat(payload: ChatRequest, request: Request):
-        """Delegate the chat request to the dialogue state machine."""
         request.state.message = payload.message
         active_settings: Settings = request.app.state.settings
         if len(payload.message) > active_settings.max_message_length:
@@ -333,9 +302,11 @@ def create_app(
             request.state.error_stage = "persistence"
             request.state.error_type = type(exc).__name__
             logger.error(
-                "chat request_id=%s stage=persistence outcome=unavailable error=%s",
+                "chat request_id=%s stage=persistence outcome=unavailable "
+                "error=%s db_error=%s",
                 request_id,
                 type(exc).__name__,
+                str(getattr(exc, "orig", exc))[:1000],
             )
             raise HTTPException(
                 status_code=503,
